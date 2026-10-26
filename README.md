@@ -120,6 +120,16 @@ Cursor 3.27.14 的 `conversation_state` wire type 6 原始故障尚未定位：�
 
 已确认 sub2api GPT 可因工具定义的 `minLength: 1.0` 被拒绝：Protobuf `Value` 用 double 表示所有数字，原转换保留浮点形式。当前源码在 MCP 输入转换边界将安全整数范围内的整值恢复为 JSON 整数，保留非整数及超出安全整数范围的浮点值。原生回归测试覆盖整数、零、负数与小数；本机已验证此前失败的 `sub2api/gpt-5.6-luna` 请求完成，HTTP 200、14 个输出 token、15 个流事件且无 provider error。0.2.9 包含更新后的 Windows 引擎和完整性校验；macOS 引擎未重新构建。
 
+## 多供应商兼容边界
+
+桥接通过 Magpie 网关使用统一协议，不按 DeepSeek、GPT、Kimi、GLM 或 Kiro 品牌硬编码转换。供应商名称不能证明兼容：仍需验证网关的协议转换、流式输出、工具调用及模型能力。
+
+- 已实际验证：DeepSeek、sub2api GPT Luna/Terra 的基础对话。
+- Antigravity 当前返回 HTTP 403 `permission_error`，说明账号所在地区不符合 Gemini Code Assist 使用资格。这属于上游授权拒绝，不应删改工具 Schema、盲目重试或静默切换模型来掩盖。需先在供应商支持的地区和账号条件下恢复授权，或选择其他获授权来源。
+- Kiro 反代、Kimi、GLM 尚未实际联调；不承诺所有模型支持工具、图片、推理参数或同样的上下文长度。
+- Schema 回归覆盖嵌套 `anyOf/properties`、整数长度/数量约束、小数 `minimum/multipleOf`、安全整数边界及非有限数处理。不按供应商删除约束，也不把所有小数强制取整。
+- 新来源验收顺序：普通流式对话 → 多轮 → 工具调用及结果回传 → 该模型声明支持的图片/推理能力；分别检查授权错误（401/403）、限流（429）、参数错误（400）和上游故障（5xx），不可将所有失败都归因于桥接。
+
 ## 开源协议
 
 本项目核心遵循 [MIT License](LICENSE)。

@@ -702,7 +702,7 @@ index 0000000..3f2edf8
 +    }
 +}
 diff --git a/server/src/cursor/compile/context.rs b/server/src/cursor/compile/context.rs
-index 859ecc5..7a9baaa 100644
+index 859ecc5..7d45606 100644
 --- a/server/src/cursor/compile/context.rs
 +++ b/server/src/cursor/compile/context.rs
 @@ -557,6 +557,8 @@ fn prost_value(value: &prost_types::Value) -> Value {
@@ -714,13 +714,32 @@ index 859ecc5..7a9baaa 100644
          Some(Kind::NumberValue(value)) => serde_json::Number::from_f64(*value)
              .map(Value::Number)
              .unwrap_or(Value::Null),
-@@ -627,3 +629,14 @@ mod tests {
+@@ -627,3 +629,33 @@ mod tests {
          assert!(context.non_file_rules.is_empty());
      }
  }
 +
 +#[cfg(test)]
 +mod bridge_json_numbers {
++    #[test]
++    fn nested_tool_schemas_preserve_integer_limits_and_fractional_constraints() {
++        use prost_types::{Value, Struct, ListValue, value::Kind};
++        fn number(n: f64) -> Value { Value { kind: Some(Kind::NumberValue(n)) } }
++        fn object(fields: Vec<(&str, Value)>) -> Value {
++            Value { kind: Some(Kind::StructValue(Struct { fields: fields.into_iter().map(|(k,v)| (k.to_owned(),v)).collect() })) }
++        }
++        let limits = object(vec![("minLength",number(1.0)),("maxItems",number(5.0)),("minimum",number(-0.5)),("multipleOf",number(0.01))]);
++        let schema = object(vec![("anyOf",Value { kind: Some(Kind::ListValue(ListValue { values: vec![object(vec![("properties",object(vec![("value",limits)]))])] })) })]);
++        let json = super::prost_value(&schema);
++        let field = &json["anyOf"][0]["properties"]["value"];
++        assert_eq!(field["minLength"].as_i64(),Some(1));
++        assert_eq!(field["maxItems"].as_i64(),Some(5));
++        assert_eq!(field["minimum"].as_f64(),Some(-0.5));
++        assert_eq!(field["multipleOf"].as_f64(),Some(0.01));
++        assert!(super::prost_value(&number(9_007_199_254_740_992.0)).as_i64().is_none());
++        assert!(super::prost_value(&number(f64::NAN)).is_null());
++    }
++
 +    #[test]
 +    fn protobuf_schema_numbers_restore_json_integers() {
 +        use prost_types::{Value, value::Kind};
