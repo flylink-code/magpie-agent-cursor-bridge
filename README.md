@@ -113,8 +113,12 @@ Windows：`powershell -ExecutionPolicy Bypass -File scripts\test-native-wire.ps1
 
 已重新构建仓库内 Windows 引擎并更新 `integrity.json`。补丁支持 hex / `data_binary` 两种 BidiAppend 编码，修正 Windows 的 Unix 信号引用，并在 protobuf 解码失败时记录字段编号、wire 类型和长度（不记录字段值）。macOS 二进制保持原样，不包含这些原生变更。插件版本为 0.2.8，原生引擎版本标识仍为 0.2.1，由 SHA-256 区分构建。
 
-Magpie 从 GitHub 仓库默认分支安装文件，不需要 GitHub Release。在 **Plugins** 更新 `github:flylink-code/magpie-agent-cursor-bridge`；若原插件来自 `932633145`，先关闭 Agents 开关，再将插件来源替换为上述 fork。确认版本为 **0.2.8**，在更新后的插件目录运行 `powershell -ExecutionPolicy Bypass -File .\setup.ps1`，再开启 Agents 开关。此操作由用户执行，构建测试不会修改已安装配置或证书。重开 Cursor 对话并发送新消息；若仍失败，保留桥接日志中的 `wire_structure` 及错误上下文供后续定位。
+Magpie 从 GitHub 仓库默认分支安装文件，不需要 GitHub Release。在 **Plugins** 更新 `github:flylink-code/magpie-agent-cursor-bridge`；若原插件来自 `932633145`，先关闭 Agents 开关，再将插件来源替换为上述 fork。确认版本为 **0.2.8**，在更新后的插件目录运行 `powershell -ExecutionPolicy Bypass -File .\setup.ps1`，再开启 Agents 开关。此操作由用户执行，构建测试不会修改已安装配置或证书。重开 Cursor 对话并发送新消息。0.2.8 的 tracing 诊断未接入实际输出，Supervisor 也会丢弃引擎 stderr，因此无法从桥接日志取得 `wire_structure`。当前源码改为在解码错误响应中返回有界的 `wire structure`（仅字段编号、类型、长度和偏移，不含字段值）；重新构建安装后，可从 Cursor Agent Host 日志取得这些诊断。此源码改动尚未作为新版本发布。
 Cursor 3.27.14 的 `conversation_state` wire type 6 原始故障尚未定位：合成合法状态可正常解码，合成非法状态可复现相同错误路径，但日志没有请求字节，不能据此断言字段变更或压缩问题。二进制编码支持不是该故障已修复的证据。
+
+### 0.2.9 Windows：MCP Schema 整数转换修正
+
+已确认 sub2api GPT 可因工具定义的 `minLength: 1.0` 被拒绝：Protobuf `Value` 用 double 表示所有数字，原转换保留浮点形式。当前源码在 MCP 输入转换边界将安全整数范围内的整值恢复为 JSON 整数，保留非整数及超出安全整数范围的浮点值。原生回归测试覆盖整数、零、负数与小数；本机已验证此前失败的 `sub2api/gpt-5.6-luna` 请求完成，HTTP 200、14 个输出 token、15 个流事件且无 provider error。0.2.9 包含更新后的 Windows 引擎和完整性校验；macOS 引擎未重新构建。
 
 ## 开源协议
 
