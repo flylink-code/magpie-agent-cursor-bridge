@@ -2,7 +2,7 @@
 
 让 Cursor 编辑器直接使用 Magpie 中配置的全部模型与路由组。模型菜单返回 Magpie 模型目录，隐藏 Cursor 默认 Auto 入口，保留 Cursor 原有登录。
 
-`0.2.8-beta` 是 **Windows x64 协议兼容性测试版**：Windows 引擎通过协议协商选择 Agent Run，修复新版 Cursor 新会话持续 Reconnecting。更新后请切换一次 Magpie 桥接开关，并在 Cursor 执行 **Developer: Reload Window**，清除窗口缓存的旧运行模式后新建对话测试。
+`0.2.9-beta` 是 **Windows x64 测试版**：Windows 引擎通过协议协商选择 Agent Run，修复新版 Cursor 新会话持续 Reconnecting；并让引擎访问本机 Magpie 网关时不再经过系统代理，修复切换 VPN / 代理工具后请求失败。更新后请切换一次 Magpie 桥接开关，并在 Cursor 执行 **Developer: Reload Window**，清除窗口缓存的旧运行模式后新建对话测试。
 
 此测试版保留现有 macOS 二进制，**macOS 尚未包含本次原生修复**；不要将其视为 macOS 已验证版本。
 

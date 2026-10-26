@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.9-beta
+
+### Fixed
+
+- 修复切换 VPN / 代理工具后模型请求失败（`error sending request for url (http://127.0.0.1:3425/v1/responses)`）：桥接引擎访问本机 Magpie 网关的 HTTP 客户端不再跟随 Windows 系统代理，也不读取 `HTTP_PROXY` 等环境变量，回环请求始终直连网关。此前引擎按系统代理设置出网，代理工具退出或切换后残留的失效代理地址会让回环请求一并失败。
+- 发往 Cursor 上游的客户端行为不变；新增回归测试覆盖“环境代理指向死端口时网关请求仍直连”。
+
+### 验证提示
+
+- Magpie 更新插件后，关闭再打开 Cursor 桥接开关即可，无需重新安装。
+
 ## 0.2.8-beta
 
 ### Fixed
