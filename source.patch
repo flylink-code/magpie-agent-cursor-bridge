@@ -317,7 +317,7 @@ new file mode 100644
 index 0000000..2a625b6
 --- /dev/null
 +++ b/server/src/bin/cursor-magpie-bridge.rs
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,155 @@
 +//! Headless Cursor protocol bridge. No desktop/account writes or management API.
 +use std::{path::PathBuf, sync::Arc, time::Duration};
 +use cursor_server::{api, config, cursor::{prompting::{PromptAssets, PromptCompiler}, transport::TransportRegistry}, local_app::CursorHarness, model::ModelConfigInput, network::NetworkClients, plugin::{PluginRegistry, PluginRuntime}, provider::ProviderRouter, search::WebCache, store::Store};
@@ -402,11 +402,19 @@ index 0000000..2a625b6
 +        parent_signal.cancel();
 +    });
 +    let mut interval = tokio::time::interval(Duration::from_secs(2));
++    #[cfg(unix)]
 +    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
++    let terminate = async {
++        #[cfg(unix)]
++        sigterm.recv().await;
++        #[cfg(not(unix))]
++        std::future::pending::<()>().await;
++    };
++    tokio::pin!(terminate);
 +    loop {
 +        tokio::select! {
 +            _ = tokio::signal::ctrl_c() => break,
-+            _ = sigterm.recv() => break,
++            _ = &mut terminate => break,
 +            _ = parent_closed.cancelled() => break,
 +            _ = interval.tick() => {
 +                if server.is_finished() { break; }
@@ -518,4 +526,178 @@ index 0000000..9590ae9
 +  }
 + }
 + Err("stream closed before successful end".into())
++}
+diff --git a/server/src/api/cursor/bidi.rs b/server/src/api/cursor/bidi.rs
+index f069981..bf2697a 100644
+--- a/server/src/api/cursor/bidi.rs
++++ b/server/src/api/cursor/bidi.rs
+@@ -153,6 +153,46 @@ fn history_image_count(history: &agent::ConversationHistory) -> usize {
+         .sum()
+ }
+ 
++// Inspect only protobuf keys/lengths. Never interpret arbitrary byte fields as messages.
++fn wire_structure(payload: &[u8]) -> String {
++    fn scan(bytes: &[u8], depth: usize, budget: &mut usize, out: &mut String) {
++        use prost::encoding::{decode_key, decode_varint, skip_field, DecodeContext, WireType};
++        use std::fmt::Write;
++        let mut rest = bytes;
++        while !rest.is_empty() && *budget > 0 {
++            *budget -= 1;
++            let offset = bytes.len() - rest.len();
++            let Ok((tag, wire)) = decode_key(&mut rest) else {
++                let _ = write!(out, " d{depth}@{offset}:invalid-key");
++                return;
++            };
++            let _ = write!(out, " d{depth}@{offset}:f{tag}/{wire:?}");
++            if wire == WireType::LengthDelimited {
++                let Ok(length) = decode_varint(&mut rest) else {
++                    out.push_str(":invalid-length");
++                    return;
++                };
++                let _ = write!(out, ":len{length}");
++                if length > rest.len() as u64 {
++                    out.push_str(":truncated");
++                    return;
++                }
++                let (value, tail) = rest.split_at(length as usize);
++                // AgentClientMessage.run_request -> AgentRunRequest.conversation_state.
++                if depth < 2 && tag == 1 { scan(value, depth + 1, budget, out); }
++                rest = tail;
++            } else if skip_field(wire, tag, &mut rest, DecodeContext::default()).is_err() {
++                out.push_str(":invalid-value");
++                return;
++            }
++        }
++        if *budget == 0 { out.push_str(":limit"); }
++    }
++    let mut out = format!("bytes={}", payload.len());
++    scan(payload, 0, &mut 48, &mut out);
++    out
++}
++
+ pub fn decode(request: &ai::BidiAppendRequest) -> Result<DecodedAppend> {
+     let request_id = request
+         .request_id
+@@ -160,22 +200,28 @@ pub fn decode(request: &ai::BidiAppendRequest) -> Result<DecodedAppend> {
+         .map(|id| id.request_id.as_str())
+         .filter(|id| !id.is_empty())
+         .ok_or_else(|| Error::Protocol("BidiAppend request_id is required".into()))?;
+-    if !request.data_binary.is_empty() {
+-        return Err(Error::Protocol(
+-            "BidiAppend data_binary is not part of the captured protocol".into(),
+-        ));
+-    }
+-    if request.data.is_empty() {
+-        return Err(Error::Protocol(
++    let decoded_hex;
++    let payload = match (request.data.is_empty(), request.data_binary.is_empty()) {
++        (false, true) => {
++            decoded_hex = hex::decode(&request.data)
++                .map_err(|error| Error::Protocol(format!("invalid BidiAppend hex: {error}")))?;
++            decoded_hex.as_slice()
++        }
++        (true, false) => request.data_binary.as_slice(),
++        (true, true) => return Err(Error::Protocol(
+             "BidiAppend contains no AgentClientMessage".into(),
+-        ));
+-    }
+-    let payload = hex::decode(&request.data)
+-        .map_err(|error| Error::Protocol(format!("invalid BidiAppend hex: {error}")))?;
++        )),
++        (false, false) => return Err(Error::Protocol(
++            "BidiAppend contains both data and data_binary".into(),
++        )),
++    };
+     Ok(DecodedAppend {
+         request_id: request_id.into(),
+         seqno: request.append_seqno,
+-        message: agent::AgentClientMessage::decode(payload.as_slice())?,
++        message: agent::AgentClientMessage::decode(payload).map_err(|error| {
++            tracing::warn!(wire_structure = %wire_structure(payload), "Bidi protobuf rejected (structure only; no field values)");
++            error
++        })?,
+     })
+ }
+ 
+@@ -209,3 +255,15 @@ pub async fn append(
+         .await?;
+     Ok(ai::BidiAppendResponse {})
+ }
++
++#[cfg(test)]
++mod bridge_structure_tests {
++    #[test]
++    fn diagnostic_never_displays_field_values() {
++        let payload = [0x0a, 0x08, 0x0a, 0x06, 0x0a, 0x04, b'S', b'E', b'C', b'R'];
++        let result = super::wire_structure(&payload);
++        assert!(result.contains("d2@0:f1/LengthDelimited:len4"));
++        assert!(!result.contains("SECR"));
++        assert!(super::wire_structure(&[0x0a, 3, 0x0a, 1, 6]).contains("d2@0:invalid-key"));
++    }
++}
+diff --git a/server/tests/bridge_bidi_wire.rs b/server/tests/bridge_bidi_wire.rs
+new file mode 100644
+index 0000000..3f2edf8
+--- /dev/null
++++ b/server/tests/bridge_bidi_wire.rs
+@@ -0,0 +1,60 @@
++use cursor_server::{api::cursor::bidi, cursor::protocol::proto::{agent::v1 as pb, aiserver::v1 as ai}};
++use prost::Message;
++
++fn request(payload: &[u8], binary: bool) -> ai::BidiAppendRequest {
++    ai::BidiAppendRequest {
++        request_id: Some(ai::BidiRequestId { request_id: "wire-regression".into() }),
++        data: if binary { String::new() } else { hex::encode(payload) },
++        data_binary: if binary { payload.to_vec() } else { vec![] },
++        ..Default::default()
++    }
++}
++
++#[test]
++fn bridge_bidi_hex_and_binary_preserve_state_blob_references() {
++    // Blob references are opaque bytes, not nested protobuf messages.
++    let state = pb::ConversationStateStructure {
++        root_prompt_messages_json: vec![vec![0x06, 0xff, 0x00]],
++        turns: vec![vec![0x06, 0xff]],
++        todos: vec![vec![0xff]],
++        summary: Some(vec![0x06]),
++        ..Default::default()
++    };
++    let message = pb::AgentClientMessage {
++        message: Some(pb::agent_client_message::Message::RunRequest(pb::AgentRunRequest {
++            conversation_state: Some(state),
++            conversation_id: Some("synthetic".into()),
++            ..Default::default()
++        })),
++    };
++    let bytes = message.encode_to_vec();
++    for binary in [false, true] {
++        let decoded = bidi::decode(&request(&bytes, binary)).unwrap();
++        assert_eq!(decoded.message, message);
++        assert_eq!(decoded.seqno, 0);
++    }
++}
++
++#[test]
++fn bridge_bidi_rejects_ambiguous_and_empty_envelopes() {
++    let mut value = request(&[0x3a, 0], true);
++    value.data = "3a00".into();
++    assert!(bidi::decode(&value).unwrap_err_string().contains("both data and data_binary"));
++    assert!(bidi::decode(&request(&[], false)).is_err());
++}
++
++trait ErrorString { fn unwrap_err_string(self) -> String; }
++impl ErrorString for cursor_server::Result<bidi::DecodedAppend> {
++    fn unwrap_err_string(self) -> String { match self { Err(e) => e.to_string(), Ok(_) => panic!("expected error") } }
++}
++
++#[test]
++fn bridge_bidi_invalid_state_reproduces_cursor_error_without_tls() {
++    // AgentClientMessage.run_request -> conversation_state -> illegal wire type 6.
++    let bytes = [0x0a, 0x03, 0x0a, 0x01, 0x06];
++    for binary in [false, true] {
++        let error = bidi::decode(&request(&bytes, binary)).unwrap_err_string();
++        assert!(error.contains("AgentRunRequest.conversation_state"), "{error}");
++        assert!(error.contains("invalid wire type value: 6"), "{error}");
++    }
 +}

@@ -19,7 +19,7 @@
 
 在 Magpie → **Plugins** 添加仓库地址安装：
 ```text
-github:932633145/magpie-agent-cursor-bridge
+github:flylink-code/magpie-agent-cursor-bridge
 ```
 
 ---
@@ -102,6 +102,19 @@ Cursor 编辑器 ──[本地 TLS 回环代理]──> 原生桥接服务 ─�
   - macOS: 通过 `launchd` 用户 LaunchAgent 守护。
 
 ---
+
+## 原生协议回归测试
+
+Windows：`powershell -ExecutionPolicy Bypass -File scripts\test-native-wire.ps1`。
+脚本在插件内获取固定版本源码、应用 `source.patch`，运行无需 TLS、证书或真实设置的解码器测试及原生库测试。
+源码保留在已忽略的 `.native-source/`，编译产物位于 `.native-target/`。完整构建并更新 Windows 二进制与 SHA-256：`powershell -ExecutionPolicy Bypass -File scripts\build-native.ps1`（需要 Rust/MSVC 工具链）。
+
+### 0.2.8 Windows 兼容性测试更新
+
+已重新构建仓库内 Windows 引擎并更新 `integrity.json`。补丁支持 hex / `data_binary` 两种 BidiAppend 编码，修正 Windows 的 Unix 信号引用，并在 protobuf 解码失败时记录字段编号、wire 类型和长度（不记录字段值）。macOS 二进制保持原样，不包含这些原生变更。插件版本为 0.2.8，原生引擎版本标识仍为 0.2.1，由 SHA-256 区分构建。
+
+Magpie 从 GitHub 仓库默认分支安装文件，不需要 GitHub Release。在 **Plugins** 更新 `github:flylink-code/magpie-agent-cursor-bridge`；若原插件来自 `932633145`，先关闭 Agents 开关，再将插件来源替换为上述 fork。确认版本为 **0.2.8**，在更新后的插件目录运行 `powershell -ExecutionPolicy Bypass -File .\setup.ps1`，再开启 Agents 开关。此操作由用户执行，构建测试不会修改已安装配置或证书。重开 Cursor 对话并发送新消息；若仍失败，保留桥接日志中的 `wire_structure` 及错误上下文供后续定位。
+Cursor 3.27.14 的 `conversation_state` wire type 6 原始故障尚未定位：合成合法状态可正常解码，合成非法状态可复现相同错误路径，但日志没有请求字节，不能据此断言字段变更或压缩问题。二进制编码支持不是该故障已修复的证据。
 
 ## 开源协议
 
