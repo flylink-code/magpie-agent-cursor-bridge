@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.8-beta
+
+### Fixed
+
+- 修复新会话持续 Reconnecting：专用桥接在 BootstrapStatsig 中明确选择已支持的 Agent Run 协议，不再继承上游 `agent_host_local_loop` 灰度配置，避免将 RunInference 请求误解码为会话状态。
+- 上游正常响应和本地 fallback 均应用相同的协议能力约束，覆盖明文、djb2、sha256 三种开关名称编码；普通 cursor-byok 保持上游选择不变。
+
+### 验证提示
+
+- Magpie 更新插件后，关闭再打开 Cursor 桥接开关。已打开的 Cursor 窗口可能缓存旧运行模式；若仍重连，请手动执行 Reload Window 后再新建对话。插件不会自动强杀 Cursor。
+
 ## 0.2.7
 
 A toggle restarted Cursor to make it re-read `http.proxy`, which cost every open
