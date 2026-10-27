@@ -1,6 +1,6 @@
 {
-    "version":  "0.2.8-beta-2",
-    "engine_version":  "0.2.1",
-    "engine":  "e67ba3f80c6fb0e0fa3528b8cf931b67f1396a5bc8eefc8c11956e1aaae56df6",
-    "engine_win32_x64":  "5256b2b381c1d456c68b3f8dc9f7f743b40823cac0d32a58cd1c873161dd174b"
+  "version": "0.2.8-beta-3",
+  "engine_version": "0.2.1",
+  "engine": "e67ba3f80c6fb0e0fa3528b8cf931b67f1396a5bc8eefc8c11956e1aaae56df6",
+  "engine_win32_x64": "eb83bd707e7838694a65d420ffa87e59ea9d35cd93f8c9b43a23dc62cf57eafa"
 }

@@ -8,7 +8,7 @@ export const agent = {
   format: "json",
   model: "model",
   ua: ["cursor-magpie-bridge"],
-  notice: "打开开关即可接管 Cursor，无需重启。首次会自动安装后台桥接（约几十秒）；若弹出证书确认，选“是”。就绪后在 Cursor 里打开对话面板或点一下模型下拉框，Magpie 的模型就会出现在列表里。"
+  notice: "打开开关即可接管 Cursor，无需重启。首次会自动安装后台桥接（约几十秒）；若弹出证书确认，选“是”。就绪后在 Cursor 里打开对话面板或点一下模型下拉框，Magpie 的模型就会出现在列表里。Cursor 的「生成提交信息」与「生成分支名」也使用这里选中的模型。"
 };
 
 // Turning the agent on starts the bridge itself, so no setup step comes first.
@@ -25,13 +25,19 @@ export function connect({ gateway, model, models }) {
 }
 
 function start() {
+  // The switches are read here, not inside the microtask: connect() returns
+  // synchronously, and a caller (a test, a sandbox) may put these variables back
+  // before the microtask runs. Reading them late made a connect() that asked for
+  // no autostart install into the real profile afterwards.
+  const autoStart = !process.env.MAGPIE_CURSOR_BRIDGE_NO_AUTOSTART;
+  const isolatedRoot = process.env.CURSOR_BRIDGE_ROOT || '';
   Promise.resolve().then(async () => {
-    if (process.env.MAGPIE_CURSOR_BRIDGE_NO_AUTOSTART) return;
+    if (!autoStart) return;
     const fs = await import('node:fs');
     const os = await import('node:os');
     const path = await import('node:path');
     const {spawn, execFileSync} = await import('node:child_process');
-    const root = process.env.CURSOR_BRIDGE_ROOT || path.join(os.homedir(), '.config', 'magpie-cursor-bridge');
+    const root = isolatedRoot || path.join(os.homedir(), '.config', 'magpie-cursor-bridge');
     // A live supervisor already keeps Cursor pointed at the bridge, but only
     // when it runs this plugin's version. Upgrading the plugin in Magpie leaves
     // the old supervisor holding the lock, and returning early on "alive" made
@@ -42,7 +48,7 @@ function start() {
     const release = staged(fs, path, root);
     const launched = Date.now();
     if (release) { launch(fs, path, spawn, chooseRuntime(fs, path, release), release, root); watch(fs, path, root, launched); return; }
-    await setup(fs, path, spawn, root);
+    await setup(fs, path, spawn, root, isolatedRoot !== '');
     watch(fs, path, root, launched);
   }).catch(error => {
     // Swallowing this silently left Cursor on its own models with the toggle
@@ -184,7 +190,9 @@ function chooseRuntime(fs, path, release) {
 
 // First run: the packaged setup stages a release, trusts the local CA and starts
 // the supervisor. It runs hidden; a Windows UAC prompt is the only sign.
-async function setup(fs, path, spawn, root) {
+// `isolated` is the caller's CURSOR_BRIDGE_ROOT decision, taken before the
+// microtask ran, so the child is told the same thing connect() acted on.
+async function setup(fs, path, spawn, root, isolated) {
   const here = sourceDirectory(path);
   const installer = path.join(here, 'install.js');
   if (!fs.existsSync(installer)) return;
@@ -195,7 +203,7 @@ async function setup(fs, path, spawn, root) {
     // private Startup folder, so an upgrade left the real one pointing at the
     // previous release. Only forward it when the caller set it themselves.
     const env = {...process.env};
-    if (process.env.CURSOR_BRIDGE_ROOT) env.CURSOR_BRIDGE_ROOT = root;
+    if (isolated) env.CURSOR_BRIDGE_ROOT = root;
     else delete env.CURSOR_BRIDGE_ROOT;
     const child = spawn(runtime, [installer, 'setup'], {
       cwd: here, detached: true, stdio: 'ignore', windowsHide: true, env

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.8-beta-3
+
+### Added
+
+- Cursor 的「生成提交信息」改由桥接引擎本地生成，使用的是**桥接里配置的默认模型**（即在 Magpie → Agents → Cursor · Magpie Bridge 中选中的那个模型）；在 Magpie 里换模型后，提交信息与分支名同步跟随。此前引擎的 `commit_settings.model_id` 一直为空，判定为直连，请求被转发到默认 TAB 服务 `https://tab.leokun.cn` 并报 `[unavailable] http error: error sending request`。现在引擎在启动与模型目录热更新时把该设置固定为默认模型行的 `model_hash`。
+- 提交信息提示词改为「语言跟随 diff」：语言判断依次看最近的提交信息、注释与文档、界面文案，没有线索时用英文；已有自定义提示词不会被覆盖。
+- 「生成分支名」（`aiserver.v1.AiService/WriteGitBranchName`）改为本地生成：与提交信息共用同一个默认模型，输出前规范化为合法 git ref（小写、kebab-case、折叠并去除 `..`/`//`/首尾分隔符、上限 60 字符），不再转发到 Cursor 上游。
+
+### Changed
+
+- 原生测试目标新增 `--test commit_message` 与 `--bin cursor-magpie-bridge`，覆盖分支名生成与提交模型同步。
+- Windows 引擎重建，`integrity.json` 更新对应 SHA-256；引擎自报版本仍为 `0.2.1`。
+
+### Fixed
+
+- 修复测试把工作区插件安装进真实环境：`connect()` 的自动安装微任务会在测试清掉 `MAGPIE_CURSOR_BRIDGE_NO_AUTOSTART` 之后才运行，于是从插件源码目录 stage 了一份 release 到用户目录并重启后台。现在 `start()` 在 `connect()` 的同步阶段就锁定「是否自启」与「隔离根目录」，`setup()` 也按这个决定传递 `CURSOR_BRIDGE_ROOT`；`agent.test.js` 另外在文件级使用临时根目录兜底，并新增回归用例断言不会产生安装产物。
+
+### 验证提示
+
+- 提交信息与分支名只用 Magpie 里选中的那一个模型，不会使用 Cursor 自己的模型设置。
+- 插件版本变更会触发重新 stage 发布副本：在 Magpie 更新插件后关闭再打开一次桥接开关，并在 Cursor 执行 Developer: Reload Window，再测试提交信息与分支名。
+
 ## 0.2.8-beta-2
 
 ### Fixed

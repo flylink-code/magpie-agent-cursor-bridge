@@ -1,11 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {agent, connect} from '../agent.js';
 
 const source = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'agent.js');
+
+// A connect() in this file must never reach the real profile, even when a test
+// removes its switches right after the call: the scratch root keeps a regression
+// inside this directory instead of staging a release into the user's install.
+const scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cursor-agent-test-'));
+const previousRoot = process.env.CURSOR_BRIDGE_ROOT;
+process.env.CURSOR_BRIDGE_ROOT = scratchRoot;
+test.after(() => {
+  if (previousRoot === undefined) delete process.env.CURSOR_BRIDGE_ROOT;
+  else process.env.CURSOR_BRIDGE_ROOT = previousRoot;
+  fs.rmSync(scratchRoot, {recursive: true, force: true});
+});
 
 test('turning the agent on returns the Magpie connection', () => {
   process.env.MAGPIE_CURSOR_BRIDGE_NO_AUTOSTART = '1';
@@ -72,8 +85,44 @@ test('an automatic install does not move the startup entry out of the real profi
   // was supposed to replace -- and the next login started the old build.
   const text = fs.readFileSync(source, 'utf8');
   const setup = text.slice(text.indexOf('async function setup'), text.indexOf('function launch'));
-  assert.match(setup, /if \(process\.env\.CURSOR_BRIDGE_ROOT\) env\.CURSOR_BRIDGE_ROOT = root/, 'isolation is forwarded only when the caller asked for it');
-  assert.match(setup, /delete env\.CURSOR_BRIDGE_ROOT/, 'a real install runs without the isolation root');
+  assert.match(setup, /if \(isolated\) env\.CURSOR_BRIDGE_ROOT = root/, 'isolation is forwarded only when the caller asked for it');
+  assert.match(setup, /else delete env\.CURSOR_BRIDGE_ROOT/, 'a real install runs without the isolation root');
+  assert.doesNotMatch(setup, /if \(process\.env\.CURSOR_BRIDGE_ROOT\)/, 'the decision is taken before the microtask, not read again here');
+});
+
+test('a switch cleared after connect() cannot still autostart', async () => {
+  // connect() returns synchronously and its autostart runs in a microtask, so
+  // reading the switches there let a caller that disabled autostart -- a test, or
+  // a sandbox that resets its environment -- be installed into afterwards. That
+  // is how a test run staged the workspace into the real profile.
+  const text = fs.readFileSync(source, 'utf8');
+  const start = text.slice(text.indexOf('function start'), text.indexOf('function watch'));
+  assert.match(start, /const autoStart = !process\.env\.MAGPIE_CURSOR_BRIDGE_NO_AUTOSTART/, 'autostart is decided when connect() runs');
+  assert.match(start, /const isolatedRoot = process\.env\.CURSOR_BRIDGE_ROOT \|\| ''/, 'so is the isolation root');
+  assert.match(start, /if \(!autoStart\) return/, 'the microtask only honours that decision');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cursor-agent-switch-'));
+  const previousIsolation = process.env.CURSOR_BRIDGE_ROOT;
+  process.env.CURSOR_BRIDGE_ROOT = root;
+  process.env.MAGPIE_CURSOR_BRIDGE_NO_AUTOSTART = '1';
+  try {
+    connect({
+      gateway: {v1: 'http://127.0.0.1:3425/v1', key: 'magpie-cursor-bridge'},
+      model: 'group/auto',
+      models: [{id: 'group/auto', name: 'Auto'}]
+    });
+  } finally {
+    // The autostart microtask has not run yet.
+    delete process.env.MAGPIE_CURSOR_BRIDGE_NO_AUTOSTART;
+  }
+  await new Promise(resolve => setTimeout(resolve, 300));
+  try {
+    assert.equal(fs.existsSync(path.join(root, 'installation.json')), false, 'nothing is installed');
+    assert.equal(fs.existsSync(path.join(root, 'supervisor.lock')), false, 'no supervisor is started');
+  } finally {
+    if (previousIsolation === undefined) delete process.env.CURSOR_BRIDGE_ROOT;
+    else process.env.CURSOR_BRIDGE_ROOT = previousIsolation;
+    fs.rmSync(root, {recursive: true, force: true});
+  }
 });
 
 test('an upgrade stops the previous watchdog, not only the supervisor', () => {

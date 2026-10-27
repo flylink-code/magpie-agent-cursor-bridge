@@ -2,6 +2,8 @@
 
 让 Cursor 编辑器直接使用 Magpie 中配置的全部模型与路由组。模型菜单返回 Magpie 模型目录，隐藏 Cursor 默认 Auto 入口，保留 Cursor 原有登录。
 
+`0.2.8-beta-3` 让 Cursor 的两个 Git 生成动作也走 Magpie 模型：SCM 面板的「生成提交信息」由桥接引擎在本地生成（语言跟随 diff 内容），「生成分支名」同样本地生成并规范化为合法 git ref，两者都不再转发到 Cursor 上游或公共 TAB 服务。**两者使用的是桥接里配置的默认模型**，也就是你在 Magpie → Agents → Cursor · Magpie Bridge 里选中的那个模型；换模型后两个动作同步跟随，不使用 Cursor 自己的模型设置。
+
 `0.2.8-beta-2` 是 **Windows x64 测试版**：Windows 引擎通过协议协商选择 Agent Run，修复新版 Cursor 新会话持续 Reconnecting；并让引擎访问本机 Magpie 网关时不再经过系统代理，修复切换 VPN / 代理工具后请求失败；并修复桥接运行期间在 Cursor 里修改的设置（字号、状态栏、扩展默认值等）在停机或重启时被还原的问题。更新后请切换一次 Magpie 桥接开关，并在 Cursor 执行 **Developer: Reload Window**，清除窗口缓存的旧运行模式后新建对话测试。
 
 此测试版保留现有 macOS 二进制，**macOS 尚未包含本次原生修复**；不要将其视为 macOS 已验证版本。
@@ -12,6 +14,7 @@
 
 - **全平台支持**：针对 Windows 与 macOS 深度适配原生协议桥接核心，开箱即用。
 - **动态模型同步**：在 Magpie 中添加、切换或分组的模型，每 15 秒自动热同步至 Cursor 模型列表。
+- **Git 动作本地生成**：SCM 面板的「生成提交信息」与「生成分支名」由桥接里配置的默认模型（Magpie 中为 Cursor · Magpie Bridge 选中的模型）生成，提交信息语言跟随 diff 内容，分支名输出为合法 git ref。
 - **无感代理接管**：连接时自动配置 Cursor 代理，断开连接或卸载时完整自动还原 Cursor 原有配置。
 - **安全与隐私**：所有 TLS 证书与回环代理均在本机生成，网络流量仅流经本机回环地址（`127.0.0.1`）至 Magpie 网关，不接触任何外部中转服务。
 
@@ -110,6 +113,12 @@ Cursor 编辑器 ──[本地 TLS 回环代理]──> 原生桥接服务 ─�
 Windows：`powershell -ExecutionPolicy Bypass -File scripts\test-native-wire.ps1`。
 脚本在插件内获取固定版本源码、应用 `source.patch`，运行无需 TLS、证书或真实设置的解码器测试及原生库测试。
 源码保留在已忽略的 `.native-source/`，编译产物位于 `.native-target/`。完整构建并更新 Windows 二进制与 SHA-256：`powershell -ExecutionPolicy Bypass -File scripts\build-native.ps1`（需要 Rust/MSVC 工具链）。
+
+测试目标包括 `bridge_bidi_wire`、`commit_message`、`cursor-magpie-bridge`（bin 自测）与 `--lib`。其中上游 `provider::attempt::tests::request_transport_failure_is_one_failed_attempt` 要求本机不拦截回环请求：reqwest 默认使用 Windows 系统代理，代理开启时连向已关闭端口的请求也会被代理应答，该用例因此失败。构建前请关闭系统代理，或临时退出代理工具。
+
+### 0.2.8-beta-3 原生引擎重建
+
+`source.patch` 新增：headless 引擎在启动与模型目录热更新时，把提交模型固定到**桥接里配置的默认模型**（`commit_settings.model_id` 写入该模型行的 `model_hash`，提示词使用「跟随 diff 语言」的自动提示词，已有自定义提示词保留），因此 Cursor 的 `WriteGitCommitMessage` 由本机生成而不再转发；同时在引擎内本地实现 `aiserver.v1.AiService/WriteGitBranchName`（同一个默认模型、输出前规范化为合法 git ref），并把该路径加入本机拦截列表。
 
 ### 0.2.8 Windows 兼容性测试更新
 
