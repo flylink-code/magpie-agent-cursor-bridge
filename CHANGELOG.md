@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.8-beta-4
+
+### Fixed
+
+- 修复在 Magpie 里切换默认模型时报 `magpie-agent-cursor-bridge: connect: ReferenceError: process is not defined`：`connect()` 曾在同步阶段读取 `process.env` 决定是否自启，而 Magpie 用 moejs 运行插件模块（没有 `process`、没有定时器，也不能 `import` Node 内置模块），异常直接从 `connect()` 抛出，这次连接写不进任何配置，模型也就没切过去。现在 `agent.js` 只保留插件描述和 `connect()` 返回的配置，不再触碰任何宿主 API。
+- 修复「在 Magpie 更新插件后仍跑旧版本」：模块在 moejs 里无法启动进程，原先写在 `agent.js` 里的自启与重装逻辑实际从未执行过。现在由后台 Supervisor（真实 Node 进程）把 `installation.json` 指向的插件版本与自身版本比较，发现更新后调用该插件的 `install.js setup`，由其暂存新的发布副本、停掉旧进程并启动新版本；同一版本失败后 10 分钟内不重试，测试用隔离目录不会触发。
+
+### Changed
+
+- `agent.js` 的说明文案改为：首次使用需运行 `setup.ps1`；之后在 Magpie 更新插件会自动升级；切换模型即时生效，无需重启 Cursor。
+- 新增 `lib/upgrade.js`（`sourceUpdate`）及其单元测试；`agent.test.js` 增加「在没有任何 Node 全局对象的沙箱里调用 `connect()`」的回归用例，`config.test.js` 不再需要隔离根目录。
+
+### 验证提示
+
+- 本次仍要执行一次 `setup.ps1`：正在运行的 0.2.8-beta-3 Supervisor 还没有自升级逻辑。装好 beta-4 之后，再在 Magpie 更新插件就不必手动运行装脚本了。
+- 切换模型后约 1 秒生效；不必重启 Cursor。
+
 ## 0.2.8-beta-3
 
 ### Added

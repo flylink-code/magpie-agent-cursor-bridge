@@ -2,6 +2,8 @@
 
 让 Cursor 编辑器直接使用 Magpie 中配置的全部模型与路由组。模型菜单返回 Magpie 模型目录，隐藏 Cursor 默认 Auto 入口，保留 Cursor 原有登录。
 
+`0.2.8-beta-4` 修复在 Magpie 里切换默认模型时报 `magpie-agent-cursor-bridge: connect: ReferenceError: process is not defined`：`connect()` 不再读取任何宿主环境（Magpie 用 moejs 运行插件模块，那里没有 `process`、没有定时器，也不能 `import` Node 内置模块），只返回该写入的配置，切换模型约 1 秒生效。同时真正修好「在 Magpie 更新插件后仍跑旧版本」：由后台 Supervisor 比较 `installation.json` 指向的插件版本与自身版本，发现更新后调用插件自己的 `install.js setup` 完成升级。**本次升级需要执行一次 `setup.ps1`**（正在运行的 0.2.8-beta-3 还没有自升级逻辑），之后再在 Magpie 更新插件即自动生效。
+
 `0.2.8-beta-3` 让 Cursor 的两个 Git 生成动作也走 Magpie 模型：SCM 面板的「生成提交信息」由桥接引擎在本地生成（语言跟随 diff 内容），「生成分支名」同样本地生成并规范化为合法 git ref，两者都不再转发到 Cursor 上游或公共 TAB 服务。**两者使用的是桥接里配置的默认模型**，也就是你在 Magpie → Agents → Cursor · Magpie Bridge 里选中的那个模型；换模型后两个动作同步跟随，不使用 Cursor 自己的模型设置。
 
 `0.2.8-beta-2` 是 **Windows x64 测试版**：Windows 引擎通过协议协商选择 Agent Run，修复新版 Cursor 新会话持续 Reconnecting；并让引擎访问本机 Magpie 网关时不再经过系统代理，修复切换 VPN / 代理工具后请求失败；并修复桥接运行期间在 Cursor 里修改的设置（字号、状态栏、扩展默认值等）在停机或重启时被还原的问题。更新后请切换一次 Magpie 桥接开关，并在 Cursor 执行 **Developer: Reload Window**，清除窗口缓存的旧运行模式后新建对话测试。
@@ -45,6 +47,7 @@ github:flylink-code/magpie-agent-cursor-bridge
    powershell -ExecutionPolicy Bypass -File .\setup.ps1
    ```
    *注：首次初始化时会检查并提示信任本机生成的本地根证书（系统标准确认窗口选择“是”即可）。*
+   *安装一次即可：之后在 Magpie 更新插件时，运行中的后台桥接会自行调用该脚本完成升级，不用再手动运行。*
 
 2. **在 Magpie 中选择模型**：
    - 打开 Magpie，在 **Agents** 页面找到 **Cursor · Magpie Bridge**。
@@ -124,7 +127,7 @@ Windows：`powershell -ExecutionPolicy Bypass -File scripts\test-native-wire.ps1
 
 已重新构建仓库内 Windows 引擎并更新 `integrity.json`。补丁支持 hex / `data_binary` 两种 BidiAppend 编码，修正 Windows 的 Unix 信号引用，并在 protobuf 解码失败时记录字段编号、wire 类型和长度（不记录字段值）。macOS 二进制保持原样，不包含这些原生变更。插件版本为 0.2.8，原生引擎版本标识仍为 0.2.1，由 SHA-256 区分构建。
 
-Magpie 从 GitHub 仓库默认分支安装文件，不需要 GitHub Release。在 **Plugins** 更新 `github:flylink-code/magpie-agent-cursor-bridge`；若原插件来自 `932633145`，先关闭 Agents 开关，再将插件来源替换为上述 fork。确认版本为 **0.2.8**，在更新后的插件目录运行 `powershell -ExecutionPolicy Bypass -File .\setup.ps1`，再开启 Agents 开关。此操作由用户执行，构建测试不会修改已安装配置或证书。重开 Cursor 对话并发送新消息。0.2.8 的 tracing 诊断未接入实际输出，Supervisor 也会丢弃引擎 stderr，因此无法从桥接日志取得 `wire_structure`。当前源码改为在解码错误响应中返回有界的 `wire structure`（仅字段编号、类型、长度和偏移，不含字段值）；重新构建安装后，可从 Cursor Agent Host 日志取得这些诊断。此源码改动尚未作为新版本发布。
+Magpie 从 GitHub 仓库默认分支安装文件，不需要 GitHub Release。在 **Plugins** 更新 `github:flylink-code/magpie-agent-cursor-bridge`；若原插件来自 `932633145`，先关闭 Agents 开关，再将插件来源替换为上述 fork。确认版本为 **0.2.8-beta-4**，在更新后的插件目录运行一次 `powershell -ExecutionPolicy Bypass -File .\setup.ps1`，再开启 Agents 开关；此后在 Magpie 更新插件由后台 Supervisor 自动升级，不必再手动运行。此操作由用户执行，构建测试不会修改已安装配置或证书。重开 Cursor 对话并发送新消息。0.2.8 的 tracing 诊断未接入实际输出，Supervisor 也会丢弃引擎 stderr，因此无法从桥接日志取得 `wire_structure`。当前源码改为在解码错误响应中返回有界的 `wire structure`（仅字段编号、类型、长度和偏移，不含字段值）；重新构建安装后，可从 Cursor Agent Host 日志取得这些诊断。此源码改动尚未作为新版本发布。
 Cursor 3.27.14 的 `conversation_state` wire type 6 原始故障尚未定位：合成合法状态可正常解码，合成非法状态可复现相同错误路径，但日志没有请求字节，不能据此断言字段变更或压缩问题。二进制编码支持不是该故障已修复的证据。
 
 ### 0.2.9 Windows：MCP Schema 整数转换修正
