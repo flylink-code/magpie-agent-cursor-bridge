@@ -11,6 +11,7 @@
 
 - 重新生成 `source.patch`，并按 v1.0.1（`2068ab2`）重建 Windows 引擎，`integrity.json` 更新对应 SHA-256；引擎自报版本仍为 `0.2.1`。产物已在纯净的 v1.0.1 工作树上 `git apply --check` 通过，打补丁后的源码与本仓库开发树逐文件一致（仅行尾不同）。
 - macOS 二进制未重建，仍不包含这些原生修复。
+- `integrity.json` 的 `engine`（macOS 引擎哈希）此前是 `e67ba3f8…`，而仓库里 `bin/cursor-magpie-bridge` 的实际 SHA-256 是 `c30b83c8…`，两者从加入 Windows 支持的那次提交起就不一致，macOS 安装会在哈希校验处直接失败。现在按仓库里实际发布的二进制填写。Windows 侧仍按 `engine_win32_x64` 校验，不受影响。
 
 ### 验证提示
 
