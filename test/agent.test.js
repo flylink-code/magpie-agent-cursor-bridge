@@ -144,6 +144,15 @@ test('an engine that exits before ready is not reported as a certificate problem
   assert.match(bridge, /bridge engine exited before ready/);
 });
 
+test('a transient model refresh failure keeps a healthy engine connected', () => {
+  const bridge = fs.readFileSync(path.join(here, '..', 'bridge.js'), 'utf8');
+  const refresh = bridge.slice(bridge.indexOf('let effective;'), bridge.indexOf('// The gateway answers', bridge.indexOf('let effective;')));
+  assert.match(refresh, /temporary gateway failure must not tear down a healthy engine/);
+  assert.match(refresh, /child && child\.exitCode===null && child\.signalCode===null && relay && ready/);
+  assert.match(refresh, /status\('connected'/);
+  assert.match(refresh, /continue;/);
+});
+
 test('the notice says how the bridge gets installed, updated and refreshed', () => {
   // The toggle cannot install anything: saying it does sent users to a switch
   // that could not help them, and left the reason for a stale build unexplained.

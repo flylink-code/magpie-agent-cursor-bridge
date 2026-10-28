@@ -295,7 +295,22 @@ if(command==='status') {
         else {
           const changed=raw!==lastConfig;
           if(changed || Date.now()>=nextRefresh || !child || child.exitCode!==null || child.signalCode!==null) {
-            const effective=await gatewayModels(c);
+            let effective;
+            try {
+              effective=await gatewayModels(c);
+            } catch (error) {
+              // A temporary gateway failure must not tear down a healthy engine.
+              // Keep the last effective catalogue and proxy serving; retry the
+              // refresh on the next pass. Only startup failures are fatal because
+              // there is no working engine to preserve in that case.
+              if(child && child.exitCode===null && child.signalCode===null && relay && ready) {
+                nextRefresh=Date.now()+4000;
+                status('connected',{model:c.model,models:lastModels,proxy:publicProxy(),backend:ready.backend,pid:child.pid,refreshError:error.message});
+                lastConfig=raw;paused=false;pausedRetries=0;
+                continue;
+              }
+              throw error;
+            }
             // The gateway answers in tens of milliseconds, so a longer period
             // only delayed a model added in Magpie; Cursor re-reads the catalog
             // on its own schedule and needs the new entries to be there.
