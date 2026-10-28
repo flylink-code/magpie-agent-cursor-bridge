@@ -124,10 +124,84 @@ index 0000000..4c956db
 +  - `fix(<具体修改项>): 修复 xxx 问题`
 +  - `chore(<具体修改项>): 修改美术资源`
 diff --git a/server/src/api/cursor/bidi.rs b/server/src/api/cursor/bidi.rs
-index f069981..65729ab 100644
+index f069981..916f09e 100644
 --- a/server/src/api/cursor/bidi.rs
 +++ b/server/src/api/cursor/bidi.rs
-@@ -153,6 +153,46 @@ fn history_image_count(history: &agent::ConversationHistory) -> usize {
+@@ -1,4 +1,7 @@
+ //! Accepts ordered Cursor Bidi append requests and routes them by request_id.
++use std::sync::Arc;
++
++use parking_lot::RwLock;
+ use prost::Message;
+ 
+ use crate::{
+@@ -19,6 +22,38 @@ pub struct DecodedAppend {
+     pub message: agent::AgentClientMessage,
+ }
+ 
++/// Route policy of a dedicated Magpie bridge.
++///
++/// Cursor names the model of a Run from the catalogue it last read, so a Run
++/// can ask for something the bridge does not serve: Cursor's own Auto, which
++/// travels as `default`, or a hash whose catalogue entry Magpie has since
++/// dropped. A bridge has no Cursor account, so forwarding such a Run upstream
++/// can only fail — Cursor answers `ResourceExhausted` once the signed-in
++/// account's own quota is spent, which the editor reports as "You've hit your
++/// usage limit". The bridge therefore serves those Runs with the route Magpie
++/// selected. The route is kept as Magpie's model id rather than a catalogue
++/// hash so it stays valid across catalogue replacements.
++#[derive(Clone, Default)]
++pub struct BridgeRoute {
++    selected: Arc<RwLock<Option<String>>>,
++}
++
++impl BridgeRoute {
++    pub fn new(selected: impl Into<String>) -> Self {
++        Self {
++            selected: Arc::new(RwLock::new(Some(selected.into()))),
++        }
++    }
++
++    pub fn selected(&self) -> Option<String> {
++        self.selected.read().clone()
++    }
++
++    pub fn set(&self, selected: impl Into<String>) {
++        *self.selected.write() = Some(selected.into());
++    }
++}
++
+ impl DecodedAppend {
+     pub fn model_id(&self) -> Option<&str> {
+         let agent::agent_client_message::Message::RunRequest(request) =
+@@ -40,8 +75,24 @@ impl DecodedAppend {
+             })
+     }
+ 
+-    pub fn conversation_id(&self) -> Option<&str> {
+-        let agent::agent_client_message::Message::RunRequest(request) =
++    /// Name another route for this append. Cursor sends the catalogue hash in
++    /// `requested_model` and repeats it in `model_details`; a Run only uses the
++    /// route both of them name.
++    pub fn with_model_id(mut self, model_id: &str) -> Self {
++        if let Some(agent::agent_client_message::Message::RunRequest(request)) =
++            self.message.message.as_mut()
++        {
++            if let Some(requested) = request.requested_model.as_mut() {
++                requested.model_id = model_id.into();
++            }
++            if let Some(details) = request.model_details.as_mut() {
++                details.model_id = model_id.into();
++            }
++        }
++        self
++    }
++
++    pub fn conversation_id(&self) -> Option<&str> {        let agent::agent_client_message::Message::RunRequest(request) =
+             self.message.message.as_ref()?
+         else {
+             return None;
+@@ -153,6 +204,46 @@ fn history_image_count(history: &agent::ConversationHistory) -> usize {
          .sum()
  }
  
@@ -174,7 +248,7 @@ index f069981..65729ab 100644
  pub fn decode(request: &ai::BidiAppendRequest) -> Result<DecodedAppend> {
      let request_id = request
          .request_id
-@@ -160,22 +200,28 @@ pub fn decode(request: &ai::BidiAppendRequest) -> Result<DecodedAppend> {
+@@ -160,22 +251,28 @@ pub fn decode(request: &ai::BidiAppendRequest) -> Result<DecodedAppend> {
          .map(|id| id.request_id.as_str())
          .filter(|id| !id.is_empty())
          .ok_or_else(|| Error::Protocol("BidiAppend request_id is required".into()))?;
@@ -215,13 +289,64 @@ index f069981..65729ab 100644
      })
  }
  
-@@ -209,3 +255,15 @@ pub async fn append(
+@@ -209,3 +306,66 @@ pub async fn append(
          .await?;
      Ok(ai::BidiAppendResponse {})
  }
 +
 +#[cfg(test)]
 +mod bridge_structure_tests {
++    use super::*;
++
++    fn run_request(model_id: &str) -> agent::AgentClientMessage {
++        agent::AgentClientMessage {
++            message: Some(agent::agent_client_message::Message::RunRequest(
++                agent::AgentRunRequest {
++                    requested_model: Some(agent::RequestedModel {
++                        model_id: model_id.into(),
++                        ..Default::default()
++                    }),
++                    model_details: Some(agent::ModelDetails {
++                        model_id: model_id.into(),
++                        ..Default::default()
++                    }),
++                    ..Default::default()
++                },
++            )),
++        }
++    }
++
++    #[test]
++    fn a_bridge_rewrites_the_route_cursor_asked_for() {
++        let decoded = DecodedAppend {
++            request_id: "fallback".into(),
++            seqno: 0,
++            message: run_request("default"),
++        };
++        assert_eq!(decoded.model_id(), Some("default"));
++
++        let decoded = decoded.with_model_id("7baa78199217e044");
++
++        assert_eq!(decoded.model_id(), Some("7baa78199217e044"));
++        let Some(agent::agent_client_message::Message::RunRequest(request)) =
++            decoded.message.message.as_ref()
++        else {
++            panic!("rewriting preserves the Run request");
++        };
++        assert_eq!(
++            request.model_details.as_ref().map(|details| details.model_id.as_str()),
++            Some("7baa78199217e044")
++        );
++    }
++
++    #[test]
++    fn bridge_route_follows_the_route_magpie_selected() {
++        let route = BridgeRoute::new("deepseek/deepseek-flash");
++        assert_eq!(route.selected().as_deref(), Some("deepseek/deepseek-flash"));
++        route.set("kiro/claude-opus-5.5");
++        assert_eq!(route.selected().as_deref(), Some("kiro/claude-opus-5.5"));
++    }
++
 +    #[test]
 +    fn diagnostic_never_displays_field_values() {
 +        let payload = [0x0a, 0x08, 0x0a, 0x06, 0x0a, 0x04, b'S', b'E', b'C', b'R'];
@@ -232,9 +357,18 @@ index f069981..65729ab 100644
 +    }
 +}
 diff --git a/server/src/api/cursor/handlers.rs b/server/src/api/cursor/handlers.rs
-index 623566a..536790d 100644
+index 623566a..24d25ee 100644
 --- a/server/src/api/cursor/handlers.rs
 +++ b/server/src/api/cursor/handlers.rs
+@@ -10,7 +10,7 @@ use tower_http::decompression::RequestDecompressionLayer;
+ 
+ use crate::{
+     api::cursor::{
+-        bidi,
++        bidi::{self, BridgeRoute},
+         proxy::{self, CursorProxy},
+         run_sse,
+     },
 @@ -88,6 +88,10 @@ fn router_with_proxy(
              "/aiserver.v1.AiService/WriteGitCommitMessage",
              post(commit_message::write_git_commit_message),
@@ -246,12 +380,84 @@ index 623566a..536790d 100644
          .route(
              "/aiserver.v1.NetworkService/IsConnected",
              post(is_connected),
+@@ -228,34 +232,60 @@ async fn run_sse_handler(
+ async fn bidi_handler(
+     State(registry): State<TransportRegistry>,
+     Extension(proxy): Extension<CursorProxy>,
++    bridge_route: Option<Extension<BridgeRoute>>,
+     request: Request<Body>,
+ ) -> Result<Response<Body>> {
+     let (parts, body) = buffered(request).await?;
+     let request: ai::BidiAppendRequest = connect::decode_unary(&body)?;
+-    let decoded = bidi::decode(&request)?;
+-    let first_model = decoded.model_id().map(str::to_owned);
+-    let conversation_id = decoded.conversation_id().map(str::to_owned);
+-    let trace_metadata = decoded.trace_metadata();
+-    let trace = registry.trace(&decoded.request_id);
+-    let local = if let Some(model_id) = decoded.model_id() {
++    let mut decoded = bidi::decode(&request)?;
++    let mut upstream_model = None;
++    if let Some(model_id) = decoded.model_id().map(str::to_owned) {
+         // 插件模型 ID 只在本地有意义,永远不转发到 Cursor 官方上游。
+-        if model_id.starts_with(crate::plugin::ADAPTER_ID_PREFIX)
+-            || registry.store().model(model_id).await?.is_some()
+-        {
++        let served = model_id.starts_with(crate::plugin::ADAPTER_ID_PREFIX)
++            || registry.store().model(&model_id).await?.is_some();
++        if served {
+             tracing::info!(
+                 request_id = decoded.request_id,
+                 model_id,
+                 "routing Cursor Run to BYOK provider"
+             );
+-            true
++        } else if let Some(route) = bridge_route.as_ref().and_then(|route| route.selected()) {
++            let hash = registry
++                .store()
++                .models()
++                .await?
++                .into_iter()
++                .find(|model| model.model_id == route)
++                .map(|model| model.model_hash)
++                .ok_or_else(|| {
++                    crate::Error::Protocol(format!(
++                        "bridge route {route} is not in the Magpie catalogue"
++                    ))
++                })?;
++            tracing::warn!(
++                request_id = decoded.request_id,
++                requested = model_id,
++                route,
++                "Cursor selected a model the bridge does not serve; using the Magpie route"
++            );
++            decoded = decoded.with_model_id(&hash);
+         } else {
+             tracing::info!(
+                 request_id = decoded.request_id,
+                 model_id,
+                 "routing Cursor Run to Cursor upstream"
+             );
+-            false
++            upstream_model = Some(model_id);
+         }
++    }
++    let first_model = decoded.model_id().map(str::to_owned);
++    let conversation_id = decoded.conversation_id().map(str::to_owned);
++    let trace_metadata = decoded.trace_metadata();
++    let trace = registry.trace(&decoded.request_id);
++    let local = if upstream_model.is_some() {
++        false
++    } else if first_model.is_some() {
++        true
+     } else if registry.local(&decoded.request_id).await.is_some() {
+         true
+     } else if registry.upstream(&decoded.request_id).await {
 diff --git a/server/src/bin/cursor-magpie-bridge.rs b/server/src/bin/cursor-magpie-bridge.rs
 new file mode 100644
-index 0000000..af9d410
+index 0000000..1c22c83
 --- /dev/null
 +++ b/server/src/bin/cursor-magpie-bridge.rs
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,225 @@
 +//! Headless Cursor protocol bridge. No desktop/account writes or management API.
 +use std::{path::PathBuf, sync::Arc, time::Duration};
 +use cursor_server::{api, config, cursor::{prompting::{PromptAssets, PromptCompiler}, transport::TransportRegistry}, local_app::CursorHarness, model::ModelConfigInput, network::NetworkClients, plugin::{PluginRegistry, PluginRuntime}, provider::ProviderRouter, search::WebCache, store::Store};
@@ -341,6 +547,9 @@ index 0000000..af9d410
 +    let store = Store::connect(&format!("sqlite://{}",root.join("bridge.db").display())).await?;
 +    store.replace_bridge_models(&current.models).await?;
 +    apply_commit_model(&store, &current.selected).await?;
++    // 桥接没有 Cursor 账号:Cursor 自己选的 Auto(`default`)或目录里已消失的
++    // 哈希都必须落到 Magpie 选中的路由上,不能转发到官方上游。
++    let route = cursor_server::api::cursor::bidi::BridgeRoute::new(current.selected.clone());
 +    let plugins = PluginRegistry::managed(store.clone(), PluginRuntime::managed()?, "1.0.1".into())?;
 +    let clients = NetworkClients::bridge(store.clone());
 +    let provider = Arc::new(ProviderRouter::new(store.clone(),plugins.clone(),clients.clone(),Duration::from_secs(3600),Duration::from_secs(1800)));
@@ -349,7 +558,8 @@ index 0000000..af9d410
 +    let address = listener.local_addr()?;
 +    registry.web_cache().set_service_addr(address);
 +    let router = api::router(registry.clone(),clients)?
-+        .layer(axum::Extension(cursor_server::cursor::services::model_catalog::LocalCatalogOnly));
++        .layer(axum::Extension(cursor_server::cursor::services::model_catalog::LocalCatalogOnly))
++        .layer(axum::Extension(route.clone()));
 +    let harness = CursorHarness::new(store.clone())?;
 +    harness.set_backend_addr(address);
 +    let proxy = harness.start_proxy_only().await?;
@@ -387,6 +597,8 @@ index 0000000..af9d410
 +                    Ok(next) if next != contents => match catalogue(&next) {
 +                        Ok(catalogue) => {
 +                            if store.replace_bridge_models(&catalogue.models).await.is_ok() {
++                                // Cursor's own model selection follows Magpie.
++                                route.set(catalogue.selected.clone());
 +                                // A route switched in Magpie must move the Git
 +                                // actions with it; the models are already live,
 +                                // so this failing only leaves them on the old one.
@@ -1235,6 +1447,26 @@ index fda8ce0..11eb900 100644
              "/aiserver.v1.DashboardService/GetEffectiveUserPlugins",
              "/aiserver.v1.DashboardService/GetUserPrivacyMode",
              "/aiserver.v1.AuthService/GetUserMeta",
+diff --git a/server/src/model/configuration.rs b/server/src/model/configuration.rs
+index 1fe7111..e1db16a 100644
+--- a/server/src/model/configuration.rs
++++ b/server/src/model/configuration.rs
+@@ -290,12 +290,9 @@ pub fn model_hash(input: &ModelConfigInput) -> Result<String> {
+         &normalized.openai_endpoint,
+         normalized.use_full_url,
+     )?;
+-    let mut parts = vec![
+-        request_url,
+-        normalized.model_id,
+-        normalized.api_key,
+-        normalized.display_name,
+-    ];
++    // 身份哈希标识的是路由(地址、密钥、上游模型),不是它的显示名:
++    // 改名(例如路由分组或提供商重命名)不该让 Cursor 已经存下的模型选择失效。
++    let mut parts = vec![request_url, normalized.model_id, normalized.api_key];
+     if normalized.model_type == ModelType::OpenAi {
+         parts.push(normalized.openai_endpoint);
+     }
 diff --git a/server/src/network.rs b/server/src/network.rs
 index 0c02fac..f0c6a99 100644
 --- a/server/src/network.rs
@@ -1336,7 +1568,7 @@ index 0c02fac..f0c6a99 100644
 +    }
  }
 diff --git a/server/src/store/models.rs b/server/src/store/models.rs
-index 6d29d3c..f47ac3e 100644
+index 6d29d3c..cde9106 100644
 --- a/server/src/store/models.rs
 +++ b/server/src/store/models.rs
 @@ -20,6 +20,28 @@ const MODEL_COLUMNS: &str = r#"
@@ -1356,8 +1588,8 @@ index 6d29d3c..f47ac3e 100644
 +        }
 +        let _write = self.writes.lock().await;
 +        let mut transaction = self.pool.begin().await?;
-+        // Calls keep their request/response bodies; removing a catalogue must not violate FK constraints.
-+        sqlx::query("UPDATE llm_calls SET model_hash = NULL").execute(&mut *transaction).await?;
++        // llm_calls.model_hash is history, not a foreign key, so replacing the
++        // catalogue leaves earlier calls attributed to the route they used.
 +        sqlx::query("DELETE FROM model_configs").execute(&mut *transaction).await?;
 +        let now = now_ms();
 +        for (hash, input) in normalized { insert_model(&mut transaction, &hash, &input, now).await?; }
@@ -1368,6 +1600,40 @@ index 6d29d3c..f47ac3e 100644
      pub async fn models(&self) -> Result<Vec<ModelConfig>> {
          let query =
              format!("SELECT {MODEL_COLUMNS} FROM model_configs ORDER BY sort_order, display_name");
+@@ -398,4 +420,33 @@ mod tests {
+         assert_eq!(cleared.model_hash, created.model_hash);
+         assert_eq!(cleared.group_name, None);
+     }
++
++    /// 显示名同样是标签:Cursor 记录的模型选择就是身份哈希,
++    /// 在 Magpie 里给同一个路由改名不该让已选中的模型退回默认。
++    #[tokio::test]
++    async fn renaming_a_model_keeps_the_selection_cursor_stored() {
++        let directory = tempfile::tempdir().unwrap();
++        let store = Store::connect(&format!(
++            "sqlite://{}",
++            directory.path().join("test.db").display()
++        ))
++        .await
++        .unwrap();
++
++        let created = store.create_model(&model_input(None)).await.unwrap();
++        let renamed = store
++            .update_model(
++                &created.model_hash,
++                &ModelConfigInput {
++                    display_name: "DeepSeek-V4.1-Flash · DeepSeek".into(),
++                    ..model_input(None)
++                },
++            )
++            .await
++            .unwrap();
++
++        assert_eq!(renamed.model_hash, created.model_hash);
++        assert_eq!(renamed.display_name, "DeepSeek-V4.1-Flash · DeepSeek");
++        assert_eq!(store.models().await.unwrap().len(), 1);
++    }
+ }
 diff --git a/server/tests/bridge_bidi_wire.rs b/server/tests/bridge_bidi_wire.rs
 new file mode 100644
 index 0000000..4a9734b
@@ -1433,6 +1699,278 @@ index 0000000..4a9734b
 +        assert!(error.contains("AgentRunRequest.conversation_state") && error.contains("d2@0:invalid-key"), "{error}");
 +        assert!(error.contains("invalid wire type value: 6"), "{error}");
 +    }
++}
+diff --git a/server/tests/bridge_route.rs b/server/tests/bridge_route.rs
+new file mode 100644
+index 0000000..8ff1216
+--- /dev/null
++++ b/server/tests/bridge_route.rs
+@@ -0,0 +1,266 @@
++//! Verifies that a dedicated bridge never hands a Cursor Run to Cursor's own
++//! backend. Cursor names the Run model from the catalogue it last read, so it
++//! can ask for its own Auto (`default`) or for a hash a replaced catalogue no
++//! longer contains; an account without Agent quota answers such a Run with
++//! `ResourceExhausted`, which the editor shows as "You've hit your usage limit".
++#[path = "support/fake_provider.rs"]
++mod fake_provider;
++#[path = "support/fixtures.rs"]
++mod fixtures;
++
++use std::{path::Path, sync::Arc, time::Duration};
++
++use axum::{
++    body::Body,
++    http::{header, Request, StatusCode},
++};
++use cursor_server::{
++    api::cursor::{self, bidi::BridgeRoute},
++    cursor::{
++        prompting::{PromptAssets, PromptCompiler},
++        protocol::{
++            connect,
++            proto::{agent::v1 as pb, aiserver::v1 as ai},
++        },
++        transport::TransportRegistry,
++        TransportCommand, TransportHandle,
++    },
++    model::{ModelConfigInput, ModelType, ModelRequest, OPENAI_CHAT_ENDPOINT},
++    network::NetworkClients,
++    provider::{FinishReason, ModelEvent},
++};
++use prost::Message;
++use tower::ServiceExt;
++
++fn model_input(openai_model: &str) -> ModelConfigInput {
++    ModelConfigInput {
++        sort_order: 1,
++        display_name: format!("{openai_model} · Magpie"),
++        group_name: None,
++        model_type: ModelType::OpenAi,
++        base_url: "http://127.0.0.1:3425/v1".into(),
++        use_full_url: false,
++        api_key: "magpie-cursor-bridge".into(),
++        tooltip_data: format!("Magpie / {openai_model}"),
++        model_id: openai_model.into(),
++        reasoning_effort: None,
++        openai_endpoint: OPENAI_CHAT_ENDPOINT.into(),
++        openai_extra_params_enabled: false,
++        openai_extra_params: serde_json::json!({}),
++        custom_headers_enabled: false,
++        custom_headers: serde_json::json!({}),
++        anthropic_extra_params_enabled: false,
++        anthropic_extra_params: serde_json::json!({}),
++        context_window_tokens: None,
++        max_completion_tokens: None,
++        anthropic_max_tokens: None,
++        anthropic_thinking_effort: None,
++        thinking_budget_tokens: None,
++    }
++}
++
++fn user_turn(model_id: &str) -> pb::AgentClientMessage {
++    pb::AgentClientMessage {
++        message: Some(pb::agent_client_message::Message::RunRequest(
++            pb::AgentRunRequest {
++                action: Some(pb::ConversationAction {
++                    action: Some(pb::conversation_action::Action::UserMessageAction(
++                        pb::UserMessageAction {
++                            user_message: Some(pb::UserMessage {
++                                text: "hello".into(),
++                                message_id: "bridge-user".into(),
++                                mode: pb::AgentMode::Agent as i32,
++                                ..Default::default()
++                            }),
++                            ..Default::default()
++                        },
++                    )),
++                    ..Default::default()
++                }),
++                conversation_id: Some("bridge-conversation".into()),
++                run_id: Some("bridge-run".into()),
++                requested_model: Some(pb::RequestedModel {
++                    model_id: model_id.into(),
++                    ..Default::default()
++                }),
++                model_details: Some(pb::ModelDetails {
++                    model_id: model_id.into(),
++                    ..Default::default()
++                }),
++                ..Default::default()
++            },
++        )),
++    }
++}
++
++fn append(request_id: &str, message: &pb::AgentClientMessage) -> Vec<u8> {
++    ai::BidiAppendRequest {
++        request_id: Some(ai::BidiRequestId {
++            request_id: request_id.into(),
++        }),
++        data_binary: message.encode_to_vec(),
++        ..Default::default()
++    }
++    .encode_to_vec()
++}
++
++fn kv_ack(id: u32) -> pb::AgentClientMessage {
++    pb::AgentClientMessage {
++        message: Some(pb::agent_client_message::Message::KvClientMessage(
++            pb::KvClientMessage {
++                id,
++                message: Some(pb::kv_client_message::Message::SetBlobResult(
++                    pb::SetBlobResult { error: None },
++                )),
++            },
++        )),
++    }
++}
++
++fn stop_response(model_call_id: &str, text: &str) -> Vec<ModelEvent> {
++    vec![
++        ModelEvent::Start {
++            model_call_id: model_call_id.into(),
++        },
++        ModelEvent::TextStart,
++        ModelEvent::TextDelta(text.into()),
++        ModelEvent::TextEnd,
++        ModelEvent::Done(FinishReason::Stop),
++    ]
++}
++
++/// Answer the client interactions a Run needs until the model is called; a
++/// bridge serves every Run locally, so reaching the provider is the assertion.
++async fn model_requests(
++    handle: &TransportHandle,
++    provider: &fake_provider::FakeProvider,
++) -> Vec<ModelRequest> {
++    let mut output = handle.subscribe();
++    let mut seqno = 1;
++    tokio::time::timeout(Duration::from_secs(10), async {
++        while provider.requests().is_empty() {
++            let Ok(Some(frame)) =
++                tokio::time::timeout(Duration::from_millis(50), output.recv()).await
++            else {
++                continue;
++            };
++            let (flags, payload) = connect::decode_frames(&frame).unwrap().pop().unwrap();
++            if flags & connect::END_STREAM_FLAG != 0 {
++                panic!("Run ended before the model was called");
++            }
++            let server = pb::AgentServerMessage::decode(payload).unwrap();
++            let reply = match server.message {
++                Some(pb::agent_server_message::Message::KvServerMessage(kv)) => Some(kv_ack(kv.id)),
++                Some(pb::agent_server_message::Message::ExecServerMessage(exec)) => {
++                    Some(pb::AgentClientMessage {
++                        message: Some(
++                            pb::agent_client_message::Message::ExecClientControlMessage(
++                                pb::ExecClientControlMessage {
++                                    message: Some(
++                                        pb::exec_client_control_message::Message::StreamClose(
++                                            pb::ExecClientStreamClose { id: exec.id },
++                                        ),
++                                    ),
++                                },
++                            ),
++                        ),
++                    })
++                }
++                _ => None,
++            };
++            if let Some(reply) = reply {
++                handle
++                    .command(TransportCommand::Append {
++                        seqno,
++                        message: Box::new(reply),
++                    })
++                    .await
++                    .unwrap();
++                seqno += 1;
++            }
++        }
++    })
++    .await
++    .expect("the model must be called");
++    provider.requests()
++}
++
++/// Cursor's Auto travels as `default`, which names no Magpie route: the bridge
++/// must run it on the route Magpie selected instead of forwarding it upstream.
++#[tokio::test]
++async fn cursor_auto_runs_on_the_magpie_route() {
++    let (_directory, store) = fixtures::temp_store().await;
++    let other = store.create_model(&model_input("p/a")).await.unwrap();
++    let selected = store.create_model(&model_input("p/b")).await.unwrap();
++    let provider = fake_provider::FakeProvider::default();
++    provider.push(stop_response("auto-call", "hi"));
++    let assets =
++        PromptAssets::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("prompt/cursor").as_path())
++            .unwrap();
++    let registry = TransportRegistry::new(
++        store.clone(),
++        Arc::new(provider.clone()),
++        PromptCompiler::new(assets),
++    );
++    let router = cursor::router(registry.clone(), NetworkClients::new(store))
++        .unwrap()
++        .layer(axum::Extension(BridgeRoute::new("p/b")));
++
++    let response = router
++        .oneshot(
++            Request::post("/aiserver.v1.BidiService/BidiAppend")
++                .header(header::CONTENT_TYPE, "application/proto")
++                .body(Body::from(append("auto-request", &user_turn("default"))))
++                .unwrap(),
++        )
++        .await
++        .unwrap();
++
++    assert_eq!(response.status(), StatusCode::OK);
++    assert!(
++        !registry.upstream("auto-request").await,
++        "a bridge must never forward a Run to Cursor's backend"
++    );
++    let handle = registry.local("auto-request").await.expect("local transport");
++    let requests = model_requests(&handle, &provider).await;
++    assert_eq!(requests.len(), 1);
++    assert_eq!(requests[0].model.model_id, selected.model_hash);
++    assert_ne!(requests[0].model.model_id, other.model_hash);
++}
++
++/// A catalogue route Cursor names stays exactly as the client selected it.
++#[tokio::test]
++async fn a_route_the_catalogue_serves_is_left_alone() {
++    let (_directory, store) = fixtures::temp_store().await;
++    let other = store.create_model(&model_input("p/a")).await.unwrap();
++    let selected = store.create_model(&model_input("p/b")).await.unwrap();
++    let provider = fake_provider::FakeProvider::default();
++    provider.push(stop_response("hash-call", "hi"));
++    let assets =
++        PromptAssets::load(Path::new(env!("CARGO_MANIFEST_DIR")).join("prompt/cursor").as_path())
++            .unwrap();
++    let registry = TransportRegistry::new(
++        store.clone(),
++        Arc::new(provider.clone()),
++        PromptCompiler::new(assets),
++    );
++    let router = cursor::router(registry.clone(), NetworkClients::new(store))
++        .unwrap()
++        .layer(axum::Extension(BridgeRoute::new("p/b")));
++
++    let response = router
++        .oneshot(
++            Request::post("/aiserver.v1.BidiService/BidiAppend")
++                .header(header::CONTENT_TYPE, "application/proto")
++                .body(Body::from(append("hash-request", &user_turn(&other.model_hash))))
++                .unwrap(),
++        )
++        .await
++        .unwrap();
++
++    assert_eq!(response.status(), StatusCode::OK);
++    let handle = registry.local("hash-request").await.expect("local transport");
++    let requests = model_requests(&handle, &provider).await;
++    assert_eq!(requests[0].model.model_id, other.model_hash);
++    assert_ne!(requests[0].model.model_id, selected.model_hash);
 +}
 diff --git a/server/tests/commit_message.rs b/server/tests/commit_message.rs
 index 80be55a..4814d57 100644

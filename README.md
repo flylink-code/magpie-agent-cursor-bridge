@@ -2,6 +2,8 @@
 
 让 Cursor 编辑器直接使用 Magpie 中配置的全部模型与路由组。模型菜单返回 Magpie 模型目录，隐藏 Cursor 默认 Auto 入口，保留 Cursor 原有登录。
 
+`0.2.8-beta-5` 修复「Cursor Agent 突然提示 `You've hit your usage limit`、之后整轮对话不能用」：Cursor 用它上次读到的模型目录给 Agent Run 命名模型，可能送来 `default`（Cursor 自带 Auto）或一个当前目录里已不存在的哈希；旧引擎把这类 Run 转发到 Cursor 官方上游，本机账号额度用完后上游回 `ResourceExhausted`，编辑器就弹这条升级提示。现在这类 Run 一律改写为 Magpie 里选中的默认模型并在本地执行，不再交给 Cursor 上游。同时模型身份哈希不再包含显示名，在 Magpie 里给模型改名/改分组不会再让 Cursor 已存下的选择变成 `unknown model: <hash>`。**本次更新需要重建的原生引擎，只包含 Windows 二进制**：在 Magpie 更新插件即自动升级，无需改 Cursor 设置。
+
 `0.2.8-beta-4` 修复在 Magpie 里切换默认模型时报 `magpie-agent-cursor-bridge: connect: ReferenceError: process is not defined`：`connect()` 不再读取任何宿主环境（Magpie 用 moejs 运行插件模块，那里没有 `process`、没有定时器，也不能 `import` Node 内置模块），只返回该写入的配置，切换模型约 1 秒生效。同时真正修好「在 Magpie 更新插件后仍跑旧版本」：由后台 Supervisor 比较 `installation.json` 指向的插件版本与自身版本，发现更新后调用插件自己的 `install.js setup` 完成升级。**本次升级需要执行一次 `setup.ps1`**（正在运行的 0.2.8-beta-3 还没有自升级逻辑），之后再在 Magpie 更新插件即自动生效。
 
 `0.2.8-beta-3` 让 Cursor 的两个 Git 生成动作也走 Magpie 模型：SCM 面板的「生成提交信息」由桥接引擎在本地生成（语言跟随 diff 内容），「生成分支名」同样本地生成并规范化为合法 git ref，两者都不再转发到 Cursor 上游或公共 TAB 服务。**两者使用的是桥接里配置的默认模型**，也就是你在 Magpie → Agents → Cursor · Magpie Bridge 里选中的那个模型；换模型后两个动作同步跟随，不使用 Cursor 自己的模型设置。

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.8-beta-5
+
+### Fixed
+
+- 修复「Cursor Agent 突然提示 `You've hit your usage limit`，之后整轮对话都不能用」：Cursor 用它上一次读到的模型目录给 Agent Run 命名模型，因此可能送来 `default`（Cursor 自带的 Auto）或一个当前目录里已经不存在的哈希。旧引擎把「不是 Magpie 模型」的 Run 一律转发到 Cursor 官方上游 `api2.cursor.sh`，本机登录账号的额度用完后上游返回 `ResourceExhausted`（`ERROR_RATE_LIMITED_CHANGEABLE`），编辑器就弹出这条「升级到 Pro」的提示。现在桥接把这类 Run 改写成 Magpie 里选中的默认模型并在本地执行，Agent Run 不再被交给 Cursor 上游；新增原生回归测试 `server/tests/bridge_route.rs` 断言 Cursor Auto 落到 Magpie 路由、而目录里存在的哈希保持客户端选择。
+- 模型身份哈希只由路由决定（请求地址、密钥、上游模型、OpenAI 端点），不再包含显示名。此前在 Magpie 里给模型改名或改分组会换哈希，Cursor 已经存下的模型选择随即变成 `unknown model: <hash>`；现在改名不影响已有选择，旧哈希也会按上一条规则落到默认路由上。
+
+### Changed
+
+- 重新生成 `source.patch`，并按 v1.0.1（`2068ab2`）重建 Windows 引擎，`integrity.json` 更新对应 SHA-256；引擎自报版本仍为 `0.2.1`。产物已在纯净的 v1.0.1 工作树上 `git apply --check` 通过，打补丁后的源码与本仓库开发树逐文件一致（仅行尾不同）。
+- macOS 二进制未重建，仍不包含这些原生修复。
+
+### 验证提示
+
+- 在 Magpie 更新插件后由后台 Supervisor 自动升级；不必改 Cursor 设置，也不必重启 Cursor，新建对话即可。
+- 升级后第一次使用旧对话时，Cursor 缓存的旧模型哈希会落到 Magpie 里选中的默认模型；想用其他模型请在模型菜单里重新选择一次。
+
 ## 0.2.8-beta-4
 
 ### Fixed
