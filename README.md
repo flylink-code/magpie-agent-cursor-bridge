@@ -1,10 +1,34 @@
 # Cursor · Magpie Bridge
 
-让 Cursor 编辑器直接使用 Magpie 中配置的全部模型与路由组。模型菜单返回 Magpie 模型目录，隐藏 Cursor 默认 Auto 入口，保留 Cursor 原有登录。
+让 Cursor 编辑器直接使用 Magpie 中配置的模型与路由组。模型菜单返回 Magpie 模型目录，隐藏 Cursor 默认 Auto 入口，保留 Cursor 原有登录。
+
+## 项目来源与维护
+
+本仓库是 [932633145/magpie-agent-cursor-bridge](https://github.com/932633145/magpie-agent-cursor-bridge) 的社区维护 Fork，由 [flylink-code](https://github.com/flylink-code) 维护；它并非 Magpie、Cursor 或上游项目的官方发行版，也不代表获得上述项目的背书。Fork 包含尚未合并上游的修改；向源工程提交的变更可见 [Pull Request #5](https://github.com/932633145/magpie-agent-cursor-bridge/pull/5)。
+
+原生引擎基于 [leookun/cursor-byok](https://github.com/leookun/cursor-byok) v1.0.1（`2068ab20513288e6a0289d33febe872a30608610`），遵循 MIT 许可证，原始版权声明和许可文本见 [LICENSE](LICENSE)；其他依赖及来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，原生源码改动见 [source.patch](source.patch)。
+
+**不要同时启用本 Fork 和上游版本**：二者使用相同的 `cursor-bridge` Agent ID、连接配置和本机桥接目录，可能发生配置及进程冲突。切换来源前先关闭现有桥接并确认代理已恢复，再在 Magpie 中更换插件来源；不要直接删除证书或数据目录作为切换步骤。
+
+## 当前版本与验证范围
+
+- `0.2.8-beta-7`：Windows 引擎处理子智能体请求缺少 `message_id` 或仅携带一个父请求头的情况。Windows 发布引擎已构建；新增 Rust 回归测试未运行，一次子智能体任务已完成，但尚未独立核实该任务经过此桥接，也不能证明每种协议边界都已验证。
+- `0.2.8-beta-6`：模型目录刷新临时失败时，保留仍健康的引擎和代理，避免因此主动断开 Cursor。
+- beta-5 和 beta-7 的原生引擎修改仅在 Windows x64 发布二进制中；现有 macOS Apple Silicon 二进制未重建，不包含这些修改，不能据此认为 macOS 的子智能体兼容性已验证。
+
+## 安全与隐私说明
+
+首次安装会生成本机根证书，并请求用户授权将其加入操作系统的受信任根证书库。信任根证书意味着持有对应私钥的程序能够签发受该信任范围认可的证书；请妥善保护本机账户和桥接私钥，只在信任该插件并理解风险后授权。
+
+桥接会修改 Cursor 用户设置中的代理相关项，流量通过本机代理进入原生引擎；发往 Magpie 的模型请求再由本机网关转发给你配置的模型提供商。其他 Cursor 请求可能转发至 Cursor 上游，模型内容是否离开本机取决于所选提供商，不能将全部流量描述为仅在本机流转。
+
+断开或卸载时，桥接尝试按日志还原自己修改过的代理项；若这些项已被其他程序或用户修改，会保留外部改动。**卸载默认保留根证书、数据和恢复记录**，不会自动撤销系统对证书的信任；如需彻底移除，应先确认不再使用该桥接，再通过操作系统证书管理工具按证书指纹核对并手动移除对应信任，谨防误删其他证书。
+
+## 历史版本说明
 
 `0.2.8-beta-5` 修复「Cursor Agent 突然提示 `You've hit your usage limit`、之后整轮对话不能用」：Cursor 用它上次读到的模型目录给 Agent Run 命名模型，可能送来 `default`（Cursor 自带 Auto）或一个当前目录里已不存在的哈希；旧引擎把这类 Run 转发到 Cursor 官方上游，本机账号额度用完后上游回 `ResourceExhausted`，编辑器就弹这条升级提示。现在这类 Run 一律改写为 Magpie 里选中的默认模型并在本地执行，不再交给 Cursor 上游。同时模型身份哈希不再包含显示名，在 Magpie 里给模型改名/改分组不会再让 Cursor 已存下的选择变成 `unknown model: <hash>`。**本次更新需要重建的原生引擎，只包含 Windows 二进制**：在 Magpie 更新插件即自动升级，无需改 Cursor 设置。
 
-`0.2.8-beta-4` 修复在 Magpie 里切换默认模型时报 `magpie-agent-cursor-bridge: connect: ReferenceError: process is not defined`：`connect()` 不再读取任何宿主环境（Magpie 用 moejs 运行插件模块，那里没有 `process`、没有定时器，也不能 `import` Node 内置模块），只返回该写入的配置，切换模型约 1 秒生效。同时真正修好「在 Magpie 更新插件后仍跑旧版本」：由后台 Supervisor 比较 `installation.json` 指向的插件版本与自身版本，发现更新后调用插件自己的 `install.js setup` 完成升级。**本次升级需要执行一次 `setup.ps1`**（正在运行的 0.2.8-beta-3 还没有自升级逻辑），之后再在 Magpie 更新插件即自动生效。
+在 beta-4 阶段，桥接修复了 Magpie 模型切换时的 `process is not defined` 问题，并由 Supervisor 接管插件自升级；这些机制已包含在当前版本中。旧版本首次升级时曾需要手动运行 `setup.ps1`，当前 beta-7 用户按上面的安装流程执行即可。
 
 `0.2.8-beta-3` 让 Cursor 的两个 Git 生成动作也走 Magpie 模型：SCM 面板的「生成提交信息」由桥接引擎在本地生成（语言跟随 diff 内容），「生成分支名」同样本地生成并规范化为合法 git ref，两者都不再转发到 Cursor 上游或公共 TAB 服务。**两者使用的是桥接里配置的默认模型**，也就是你在 Magpie → Agents → Cursor · Magpie Bridge 里选中的那个模型；换模型后两个动作同步跟随，不使用 Cursor 自己的模型设置。
 
@@ -16,20 +40,23 @@
 
 ## 特性
 
-- **全平台支持**：针对 Windows 与 macOS 深度适配原生协议桥接核心，开箱即用。
-- **动态模型同步**：在 Magpie 中添加、切换或分组的模型，每 15 秒自动热同步至 Cursor 模型列表。
+- **平台支持**：安装器支持 Windows x64 和 Apple Silicon macOS；最新原生协议修复的支持范围见上方版本说明。
+- **动态模型同步**：后台约每 4 秒向 Magpie 刷新一次模型目录；Cursor 模型菜单何时更新取决于它何时重新请求目录。
 - **Git 动作本地生成**：SCM 面板的「生成提交信息」与「生成分支名」由桥接里配置的默认模型（Magpie 中为 Cursor · Magpie Bridge 选中的模型）生成，提交信息语言跟随 diff 内容，分支名输出为合法 git ref。
-- **无感代理接管**：连接时自动配置 Cursor 代理，断开连接或卸载时完整自动还原 Cursor 原有配置。
-- **安全与隐私**：所有 TLS 证书与回环代理均在本机生成，网络流量仅流经本机回环地址（`127.0.0.1`）至 Magpie 网关，不接触任何外部中转服务。
+- **代理配置还原**：连接时配置 Cursor 代理，断开或卸载时按日志还原桥接写入的代理项，保留检测到的外部改动。
+- **数据路径**：发往 Magpie 的模型请求经本机回环代理和本机网关转发给所选模型提供商；其他请求的转发与证书信任风险见上方安全说明。
 
 ---
 
-### 安装方式
+### 在 Magpie 中安装与上架状态
 
-在 Magpie → **Plugins** 添加仓库地址安装：
+本 Fork 可以直接作为 Git 插件安装：
+
 ```text
 github:flylink-code/magpie-agent-cursor-bridge
 ```
+
+它目前不是 `magpie-community/plugins` 的社区推荐包，也不是 Magpie 官方插件。社区仓库的 `registry.json` 和 npm 发布需要社区维护者审核；GitHub Fork 也不会自动进入 Magpie 的第三方插件发现列表。用户可以通过上面的 GitHub 地址安装，但应把它视为 `flylink-code` 维护的社区 Fork，并自行评估来源、证书和代理风险。
 
 ---
 
@@ -129,7 +156,7 @@ Windows：`powershell -ExecutionPolicy Bypass -File scripts\test-native-wire.ps1
 
 已重新构建仓库内 Windows 引擎并更新 `integrity.json`。补丁支持 hex / `data_binary` 两种 BidiAppend 编码，修正 Windows 的 Unix 信号引用，并在 protobuf 解码失败时记录字段编号、wire 类型和长度（不记录字段值）。macOS 二进制保持原样，不包含这些原生变更。插件版本为 0.2.8，原生引擎版本标识仍为 0.2.1，由 SHA-256 区分构建。
 
-Magpie 从 GitHub 仓库默认分支安装文件，不需要 GitHub Release。在 **Plugins** 更新 `github:flylink-code/magpie-agent-cursor-bridge`；若原插件来自 `932633145`，先关闭 Agents 开关，再将插件来源替换为上述 fork。确认版本为 **0.2.8-beta-4**，在更新后的插件目录运行一次 `powershell -ExecutionPolicy Bypass -File .\setup.ps1`，再开启 Agents 开关；此后在 Magpie 更新插件由后台 Supervisor 自动升级，不必再手动运行。此操作由用户执行，构建测试不会修改已安装配置或证书。重开 Cursor 对话并发送新消息。0.2.8 的 tracing 诊断未接入实际输出，Supervisor 也会丢弃引擎 stderr，因此无法从桥接日志取得 `wire_structure`。当前源码改为在解码错误响应中返回有界的 `wire structure`（仅字段编号、类型、长度和偏移，不含字段值）；重新构建安装后，可从 Cursor Agent Host 日志取得这些诊断。此源码改动尚未作为新版本发布。
+Magpie 从 GitHub 仓库默认分支安装文件，不需要 GitHub Release。在 **Plugins** 更新 `github:flylink-code/magpie-agent-cursor-bridge`；若原插件来自 `932633145`，先关闭 Agents 开关，再将插件来源替换为上述 fork。确认版本为 **0.2.8-beta-7**，在更新后的插件目录运行一次 `powershell -ExecutionPolicy Bypass -File .\setup.ps1`，再开启 Agents 开关；此后在 Magpie 更新插件由后台 Supervisor 自动升级，不必再手动运行。此操作由用户执行，构建测试不会修改已安装配置或证书。重开 Cursor 对话并发送新消息。0.2.8 的 tracing 诊断未接入实际输出，Supervisor 也会丢弃引擎 stderr，因此无法从桥接日志取得 `wire_structure`。当前源码改为在解码错误响应中返回有界的 `wire structure`（仅字段编号、类型、长度和偏移，不含字段值）；重新构建安装后，可从 Cursor Agent Host 日志取得这些诊断。此源码改动尚未作为新版本发布。
 Cursor 3.27.14 的 `conversation_state` wire type 6 原始故障尚未定位：合成合法状态可正常解码，合成非法状态可复现相同错误路径，但日志没有请求字节，不能据此断言字段变更或压缩问题。二进制编码支持不是该故障已修复的证据。
 
 ### 0.2.9 Windows：MCP Schema 整数转换修正
