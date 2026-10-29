@@ -452,6 +452,51 @@ index 623566a..24d25ee 100644
      } else if registry.local(&decoded.request_id).await.is_some() {
          true
      } else if registry.upstream(&decoded.request_id).await {
+@@ -373,13 +403,10 @@ fn parent_headers(headers: &HeaderMap) -> Result<Option<TransportParent>> {
+     let tool_call_id = header_text(headers, "x-parent-agent-tool-call-id")?;
+     match (request_id, tool_call_id) {
+         (None, None) => Ok(None),
+-        (Some(request_id), Some(tool_call_id)) => Ok(Some(TransportParent {
+-            request_id: request_id.into(),
+-            tool_call_id: tool_call_id.into(),
++        (request_id, tool_call_id) => Ok(Some(TransportParent {
++            request_id: request_id.map(str::to_owned),
++            tool_call_id: tool_call_id.map(str::to_owned),
+         })),
+-        _ => Err(crate::Error::Protocol(
+-            "Cursor subagent request must include both parent headers".into(),
+-        )),
+     }
+ }
+ 
+@@ -390,3 +417,27 @@ fn header_text<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a str> {
+         .transpose()
+         .map_err(|error| crate::Error::Protocol(format!("invalid {name} header: {error}")))
+ }
++
++#[cfg(test)]
++mod parent_header_tests {
++    use super::*;
++
++    #[test]
++    fn parent_headers_are_independent() {
++        let mut headers = HeaderMap::new();
++        assert!(parent_headers(&headers).unwrap().is_none());
++        headers.insert("x-parent-request-id", HeaderValue::from_static("request"));
++        let parent = parent_headers(&headers).unwrap().unwrap();
++        assert_eq!(parent.request_id.as_deref(), Some("request"));
++        assert_eq!(parent.tool_call_id, None);
++        headers.remove("x-parent-request-id");
++        headers.insert("x-parent-agent-tool-call-id", HeaderValue::from_static("tool"));
++        let parent = parent_headers(&headers).unwrap().unwrap();
++        assert_eq!(parent.request_id, None);
++        assert_eq!(parent.tool_call_id.as_deref(), Some("tool"));
++        headers.insert("x-parent-request-id", HeaderValue::from_static("request"));
++        let parent = parent_headers(&headers).unwrap().unwrap();
++        assert_eq!(parent.request_id.as_deref(), Some("request"));
++        assert_eq!(parent.tool_call_id.as_deref(), Some("tool"));
++    }
++}
 diff --git a/server/src/bin/cursor-magpie-bridge.rs b/server/src/bin/cursor-magpie-bridge.rs
 new file mode 100644
 index 0000000..1c22c83
@@ -2073,3 +2118,131 @@ index 80be55a..4814d57 100644
 +    let text = std::str::from_utf8(&body).unwrap();
 +    assert!(text.contains("diffs are required"));
 +}
+diff --git a/server/src/cursor/compile/run.rs b/server/src/cursor/compile/run.rs
+--- a/server/src/cursor/compile/run.rs
++++ b/server/src/cursor/compile/run.rs
+@@ -1,6 +1,7 @@
+ //! Compiles an AgentRunRequest into a PreparedRun.
+ use std::collections::BTreeMap;
+ 
++use prost::Message as _;
+ use uuid::Uuid;
+ 
+ use crate::{
+@@ -399,6 +400,28 @@ fn execution_run_id(request_id: &str) -> RunId {
+     RunId::new(format!("{request_id}:{}", &execution_id[..8]))
+ }
+ 
++fn synthetic_message_id(user: &pb::UserMessage) -> String {
++    let mut identity = user.clone();
++    identity.message_id.clear();
++    format!("synthetic:{}", BlobId::digest(&identity.encode_to_vec()).to_base64())
++}
++
++#[cfg(test)]
++mod synthetic_id_tests {
++    use super::*;
++
++    #[test]
++    fn message_identity_is_stable_and_distinguishes_content() {
++        let first = pb::UserMessage { text: "task one".into(), ..Default::default() };
++        let other = pb::UserMessage { text: "task two".into(), ..Default::default() };
++        let mut with_id = first.clone();
++        with_id.message_id = "ignored".into();
++        assert_eq!(synthetic_message_id(&first), synthetic_message_id(&first.clone()));
++        assert_eq!(synthetic_message_id(&first), synthetic_message_id(&with_id));
++        assert_ne!(synthetic_message_id(&first), synthetic_message_id(&other));
++    }
++}
++
+ fn action(request: &pb::AgentRunRequest) -> Result<ActionProjection> {
+     let conversation_mode = request
+         .conversation_state
+@@ -431,15 +438,14 @@ fn action(request: &pb::AgentRunRequest) -> Result<ActionProjection> {
+             } else {
+                 user.mode
+             };
+-            if user.message_id.is_empty() {
+-                return Err(Error::Protocol(
+-                    "Cursor user message action has no message_id".into(),
+-                ));
++            let mut turn_user = user.clone();
++            if turn_user.message_id.is_empty() {
++                turn_user.message_id = synthetic_message_id(&turn_user);
+             }
+-            if user.text.trim() == "/summarize" {
++            if turn_user.text.trim() == "/summarize" {
+                 return Ok(ActionProjection {
+                     mode,
+-                    turn_user: Some(user.clone()),
++                    turn_user: Some(turn_user),
+                     action_context: String::new(),
+                     event_id: None,
+                     input_id: None,
+@@ -461,10 +467,10 @@ fn action(request: &pb::AgentRunRequest) -> Result<ActionProjection> {
+                     .filter(|text| !text.is_empty())
+                     .cloned(),
+             );
+-            let input_id = format!("cursor:user:{}", user.message_id);
++            let input_id = format!("cursor:user:{}", turn_user.message_id);
+             Ok(ActionProjection {
+                 mode,
+-                turn_user: Some(user.clone()),
++                turn_user: Some(turn_user),
+                 action_context: context.join("\n\n"),
+                 event_id: None,
+                 input_id: Some(input_id),
+diff --git a/server/src/cursor/conversation/runtime.rs b/server/src/cursor/conversation/runtime.rs
+--- a/server/src/cursor/conversation/runtime.rs
++++ b/server/src/cursor/conversation/runtime.rs
+@@ -628,7 +628,7 @@ fn spawn_run_request(
+         let mut checkpoint = CheckpointBuilder::new(
+             dependencies.store.clone(),
+             blob_sync.clone(),
+-            handle.parent().map(|parent| parent.tool_call_id.clone()),
++            handle.parent().and_then(|parent| parent.tool_call_id.clone()),
+             request.conversation_state.clone(),
+         );
+         let prepared = tokio::select! {
+diff --git a/server/src/cursor/transport/handle.rs b/server/src/cursor/transport/handle.rs
+--- a/server/src/cursor/transport/handle.rs
++++ b/server/src/cursor/transport/handle.rs
+@@ -19,8 +19,8 @@ use super::{OutputHub, TransportAdmission, TransportLifecycle};
+ 
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub struct TransportParent {
+-    pub request_id: String,
+-    pub tool_call_id: String,
++    pub request_id: Option<String>,
++    pub tool_call_id: Option<String>,
+ }
+ 
+ #[derive(Clone)]
+@@ -81,8 +81,11 @@ impl TransportHandle {
+     }
+ 
+     pub fn set_parent(&self, parent: TransportParent) -> Result<()> {
+-        if parent.request_id.is_empty() || parent.tool_call_id.is_empty() {
+-            return Err(Error::Protocol("Cursor parent ids are required".into()));
++        if (parent.request_id.is_none() && parent.tool_call_id.is_none())
++            || parent.request_id.as_ref().is_some_and(String::is_empty)
++            || parent.tool_call_id.as_ref().is_some_and(String::is_empty)
++        {
++            return Err(Error::Protocol("Cursor parent ids must not be empty".into()));
+         }
+         if self.parent.get().is_some_and(|current| current != &parent) {
+             return Err(Error::Protocol(format!(
+diff --git a/server/tests/error_lifecycle.rs b/server/tests/error_lifecycle.rs
+--- a/server/tests/error_lifecycle.rs
++++ b/server/tests/error_lifecycle.rs
+@@ -601,8 +601,8 @@ async fn parent_request_does_not_need_to_resolve_to_an_active_run() {
+     assert_run_starts_without_parent_dependency(
+         "finished-parent-request",
+         Some(TransportParent {
+-            request_id: "already-finished-parent".into(),
+-            tool_call_id: "original-tool-call".into(),
++            request_id: Some("already-finished-parent".into()),
++            tool_call_id: Some("original-tool-call".into()),
+         }),
+         None,
+     )
